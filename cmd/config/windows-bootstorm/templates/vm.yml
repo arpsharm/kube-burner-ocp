@@ -1,0 +1,112 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: windows-bootstorm-{{.Iteration}}-{{.Replica}}
+  labels:
+    kubevirt.io/vm: windows-bootstorm-{{.Iteration}}-{{.Replica}}
+spec:
+  runStrategy: Halted
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: windows-bootstorm-{{.Iteration}}-{{.Replica}}
+    spec:
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            kube-burner.io/job: create-windows-vms
+      terminationGracePeriodSeconds: 0
+      evictionStrategy: LiveMigrate
+      domain:
+        firmware:
+          bootloader:
+            efi:
+              secureBoot: false
+        clock:
+          timer:
+            hpet:
+              present: false
+            hyperv: {}
+            pit:
+              tickPolicy: delay
+            rtc:
+              tickPolicy: catchup
+          utc: {}
+        cpu:
+          cores: 1
+          model: host-passthrough
+          sockets: {{.vmCPU}}
+          threads: 1
+        ioThreads:
+          supplementalPoolThreadCount: 8
+        ioThreadsPolicy: supplementalPool
+        devices:
+          autoattachMemBalloon: false
+          blockMultiQueue: false
+          networkInterfaceMultiqueue: true
+          disks:
+          - disk:
+              bus: virtio
+            name: rootdisk
+            dedicatedIOThread: false
+          interfaces:
+          - masquerade: {}
+            model: virtio
+            name: nic-0
+          tpm: {}
+        features:
+          acpi: {}
+          apic: {}
+          hyperv:
+            frequencies: {}
+            ipi: {}
+            reenlightenment: {}
+            tlbflush: {}
+            relaxed: {}
+            reset: {}
+            runtime: {}
+            spinlocks:
+              spinlocks: 8191
+            synic: {}
+            synictimer:
+              direct: {}
+            vapic: {}
+            vpindex: {}
+          smm: {}
+        machine:
+          type: q35
+        resources:
+          requests:
+            cpu: {{.vmCPU}}
+            memory: {{.vmMemory}}
+          limits:
+            cpu: {{.vmCPU}}
+            memory: {{.vmMemory}}
+      networks:
+      - name: nic-0
+        pod: {}
+      volumes:
+      - dataVolume:
+          name: windows-bootstorm-rootdisk-{{.Iteration}}-{{.Replica}}
+        name: rootdisk
+  dataVolumeTemplates:
+  - metadata:
+      name: windows-bootstorm-rootdisk-{{.Iteration}}-{{.Replica}}
+      annotations:
+        descheduler.alpha.kubernetes.io/evict: "true"
+    spec:
+      source:
+        pvc:
+          namespace: {{.sourceNamespace}}
+          name: {{.sourceDVName}}
+      storage:
+        accessModes:
+        - {{.accessMode}}
+        volumeMode: Block
+        resources:
+          requests:
+            storage: {{.storageSize}}
+        storageClassName: {{.storageClassName}}
