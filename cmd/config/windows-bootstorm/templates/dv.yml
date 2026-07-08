@@ -13,6 +13,7 @@ spec:
   storage:
     accessModes:
     - {{.accessMode}}
+    volumeMode: Block
     resources:
       requests:
         storage: {{.storageSize}}

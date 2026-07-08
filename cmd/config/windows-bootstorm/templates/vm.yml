@@ -10,6 +10,7 @@ spec:
     metadata:
       labels:
         kubevirt.io/vm: windows-bootstorm-{{.Iteration}}-{{.Replica}}
+        kube-burner.io/job: create-windows-vms
     spec:
       topologySpreadConstraints:
       - maxSkew: 1

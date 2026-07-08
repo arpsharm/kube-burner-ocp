@@ -68,7 +68,7 @@ func NewWindowsBootstorm(wh *workloads.WorkloadHelper) *cobra.Command {
 			if !virtctl.IsInstalled() {
 				log.Fatal("Failed to run virtctl. Check that it is installed, in PATH and working")
 			}
-			storageClassName, _ = getStorageAndSnapshotClasses(storageClassName, false, false)
+			storageClassName, _ = getStorageAndSnapshotClasses(storageClassName, false, true)
 		},
 		Run: func(cmd *cobra.Command, args []string) {
 			totalVMs := clusterMetadata.WorkerNodesCount * vmsPerNode
@@ -94,7 +94,9 @@ func NewWindowsBootstorm(wh *workloads.WorkloadHelper) *cobra.Command {
 				results := startAndMeasureVMs(cmd.Context())
 				writeBootstormResults(results, wh)
 			}
-			cleanupBootstormNamespace(cmd.Context())
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			cleanupBootstormNamespace(cleanupCtx)
 		},
 		PostRun: func(cmd *cobra.Command, args []string) {
 			os.Exit(rc)
@@ -140,8 +142,13 @@ func startAndMeasureVMs(ctx context.Context) []bootstormResult {
 				if ctx.Err() != nil {
 					return
 				}
-				output, _ := exec.CommandContext(ctx, "kubectl", "get", "dv", dvName, "-n", bootstormNamespace,
+				output, err := exec.CommandContext(ctx, "kubectl", "get", "dv", dvName, "-n", bootstormNamespace,
 					"-o", "jsonpath={.status.phase}").Output()
+				if err != nil {
+					log.Warnf("Failed to get DV %s phase: %v", dvName, err)
+					time.Sleep(sshPollInterval)
+					continue
+				}
 				phase := strings.TrimSpace(string(output))
 				if phase == "Succeeded" {
 					return
@@ -157,7 +164,11 @@ func startAndMeasureVMs(ctx context.Context) []bootstormResult {
 	}
 	stopWg.Wait()
 	log.Infof("All DVs complete. Resting 60s before boot measurement...")
-	time.Sleep(60 * time.Second)
+	select {
+	case <-ctx.Done():
+		return nil
+	case <-time.After(60 * time.Second):
+	}
 	log.Infof("Starting %d VMs (concurrency: %d)", len(vmNames), sshConcurrencyLimit)
 
 	// Start + measure in bulks with barrier and rest between bulks
@@ -195,7 +206,11 @@ func startAndMeasureVMs(ctx context.Context) []bootstormResult {
 
 		if end < len(vmNames) {
 			log.Infof("Bulk complete, resting 30s")
-			time.Sleep(30 * time.Second)
+			select {
+			case <-ctx.Done():
+				return allResults
+			case <-time.After(30 * time.Second):
+			}
 		}
 	}
 
@@ -209,8 +224,13 @@ func waitForSSH(ctx context.Context, vmName string, startTime time.Time) bootsto
 		if ctx.Err() != nil {
 			return bootstormResult{VMName: vmName, AccessVM: 0}
 		}
-		output, _ := exec.CommandContext(ctx, "kubectl", "get", "vm", vmName, "-n", bootstormNamespace,
+		output, err := exec.CommandContext(ctx, "kubectl", "get", "vm", vmName, "-n", bootstormNamespace,
 			"-o", "jsonpath={.status.printableStatus}").Output()
+		if err != nil {
+			log.Warnf("Failed to get VM %s status: %v", vmName, err)
+			time.Sleep(sshPollInterval)
+			continue
+		}
 		if strings.TrimSpace(string(output)) == "Running" {
 			break
 		}
