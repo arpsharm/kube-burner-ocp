@@ -9,7 +9,7 @@ metadata:
 spec:
   source:
     http:
-      url: {{.windowsImageURL}}
+      url: "{{.windowsImageURL}}"
   storage:
     accessModes:
     - {{.accessMode}}

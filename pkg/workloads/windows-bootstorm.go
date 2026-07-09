@@ -326,7 +326,7 @@ func writeBootstormResults(results []bootstormResult, wh *workloads.WorkloadHelp
 			continue
 		}
 		resp, err := (*idx).Index(docs, indexers.IndexingOpts{
-			MetricName: "bootstormSSHMeasurement-create-windows-vms",
+			MetricName: "bootstormSSHMeasurement",
 		})
 		if err != nil {
 			log.Errorf("Failed to index bootstorm SSH results: %v", err)
