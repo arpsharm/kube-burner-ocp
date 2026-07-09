@@ -92,7 +92,12 @@ func NewWindowsBootstorm(wh *workloads.WorkloadHelper) *cobra.Command {
 
 			if rc == 0 {
 				results := startAndMeasureVMs(cmd.Context())
-				writeBootstormResults(results, wh)
+				if len(results) == 0 {
+					log.Error("Bootstorm measurement produced no results")
+					rc = 1
+				} else {
+					writeBootstormResults(results, wh)
+				}
 			}
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
@@ -130,6 +135,10 @@ func startAndMeasureVMs(ctx context.Context) []bootstormResult {
 	for _, vm := range vmList.Items {
 		vmNames = append(vmNames, vm.GetName())
 	}
+	if len(vmNames) == 0 {
+		log.Errorf("No VMs found in namespace %s", bootstormNamespace)
+		return nil
+	}
 	// Wait for all DV clones to complete
 	log.Infof("Waiting for %d DVs to reach Succeeded...", len(vmNames))
 	var stopWg sync.WaitGroup
@@ -145,7 +154,6 @@ func startAndMeasureVMs(ctx context.Context) []bootstormResult {
 				output, err := exec.CommandContext(ctx, "kubectl", "get", "dv", dvName, "-n", bootstormNamespace,
 					"-o", "jsonpath={.status.phase}").Output()
 				if err != nil {
-					log.Warnf("Failed to get DV %s phase: %v", dvName, err)
 					time.Sleep(sshPollInterval)
 					continue
 				}
@@ -163,11 +171,11 @@ func startAndMeasureVMs(ctx context.Context) []bootstormResult {
 		}(name)
 	}
 	stopWg.Wait()
-	log.Infof("All DVs complete. Resting 60s before boot measurement...")
+	log.Infof("DV polling finished. Resting 150s before boot measurement...")
 	select {
 	case <-ctx.Done():
 		return nil
-	case <-time.After(60 * time.Second):
+	case <-time.After(150 * time.Second):
 	}
 	log.Infof("Starting %d VMs (concurrency: %d)", len(vmNames), sshConcurrencyLimit)
 
@@ -254,7 +262,9 @@ func waitForSSH(ctx context.Context, vmName string, startTime time.Time) bootsto
 			"--local-ssh-opts=-o StrictHostKeyChecking=no",
 			"--local-ssh-opts=-o UserKnownHostsFile=/dev/null",
 			"-n", bootstormNamespace,
-			fmt.Sprintf("root@vm/%s", vmName),
+			"-c", "exit",
+			"--username", "root",
+			fmt.Sprintf("vm/%s", vmName),
 		).CombinedOutput()
 
 		outStr := strings.ToLower(string(output))
