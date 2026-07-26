@@ -11,14 +11,7 @@ spec:
       labels:
         kubevirt.io/vm: windows-bootstorm-{{.Iteration}}-{{.Replica}}
     spec:
-      topologySpreadConstraints:
-      - maxSkew: 1
-        topologyKey: kubernetes.io/hostname
-        whenUnsatisfiable: ScheduleAnyway
-        labelSelector:
-          matchLabels:
-            kube-burner.io/job: create-windows-vms
-      terminationGracePeriodSeconds: 0
+      terminationGracePeriodSeconds: 180
       evictionStrategy: LiveMigrate
       domain:
         firmware:
@@ -46,27 +39,31 @@ spec:
         devices:
           autoattachMemBalloon: false
           blockMultiQueue: false
-          networkInterfaceMultiqueue: true
           disks:
           - disk:
               bus: virtio
             name: rootdisk
-            dedicatedIOThread: false
+            bootOrder: 1
+          inputs:
+          - bus: virtio
+            name: tablet
+            type: tablet
+          tpm: {}
           interfaces:
           - masquerade: {}
             model: virtio
             name: nic-0
-          tpm: {}
+          networkInterfaceMultiqueue: true
         features:
           acpi: {}
           apic: {}
           hyperv:
+            evmcs:
+              enabled: true
             frequencies: {}
             ipi: {}
-            reenlightenment: {}
             tlbflush: {}
             relaxed: {}
-            reset: {}
             runtime: {}
             spinlocks:
               spinlocks: 8191
@@ -83,8 +80,8 @@ spec:
             cpu: {{.vmCPU}}
             memory: {{.vmMemory}}
           limits:
-            cpu: {{.vmCPU}}
-            memory: {{.vmMemory}}
+            cpu: {{.vmCPULimit}}
+            memory: {{.vmMemoryLimit}}
       networks:
       - name: nic-0
         pod: {}

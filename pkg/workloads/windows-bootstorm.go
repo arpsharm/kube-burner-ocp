@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -49,9 +51,9 @@ type bootstormResult struct {
 }
 
 func NewWindowsBootstorm(wh *workloads.WorkloadHelper) *cobra.Command {
-	var windowsImageURL, storageClassName, volumeAccessMode, vmMemory, storageSize string
-	var vmsPerNode, vmCPU int
-	var vmiRunningThreshold time.Duration
+	var windowsImageURL, storageClassName, volumeAccessMode, vmMemory, vmMemoryLimit, storageSize, cdiSourceType, cdiSourceS3Cred string
+	var vmsPerNode, vmCPU, vmCPULimit int
+	var vmiRunningThreshold, jobIterationDelay time.Duration
 	var metricsProfiles []string
 	var rc int
 	cmd := &cobra.Command{
@@ -83,7 +85,15 @@ func NewWindowsBootstorm(wh *workloads.WorkloadHelper) *cobra.Command {
 			AdditionalVars["accessMode"] = accessModeTranslator[volumeAccessMode]
 			AdditionalVars["vmMemory"] = vmMemory
 			AdditionalVars["vmCPU"] = vmCPU
+			AdditionalVars["vmCPULimit"] = vmCPULimit
+			AdditionalVars["vmMemoryLimit"] = vmMemoryLimit
 			AdditionalVars["storageSize"] = storageSize
+			AdditionalVars["cdiSourceType"] = cdiSourceType
+			AdditionalVars["cdiSourceS3Cred"] = cdiSourceS3Cred
+			if !cmd.Flags().Changed("burst") {
+				AdditionalVars["BURST"] = 1
+			}
+			AdditionalVars["jobIterationDelay"] = jobIterationDelay
 
 			setMetrics(cmd, metricsProfiles)
 			AddVirtMetadata(wh, windowsImageURL, "", "")
@@ -99,7 +109,7 @@ func NewWindowsBootstorm(wh *workloads.WorkloadHelper) *cobra.Command {
 					writeBootstormResults(results, wh)
 				}
 			}
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 			defer cancel()
 			cleanupBootstormNamespace(cleanupCtx)
 		},
@@ -111,9 +121,14 @@ func NewWindowsBootstorm(wh *workloads.WorkloadHelper) *cobra.Command {
 	cmd.Flags().IntVar(&vmsPerNode, "vms-per-node", 1, "Number of Windows VMs to create per worker node")
 	cmd.Flags().StringVar(&storageClassName, "storage-class", "", "Storage class for DataVolumes (auto-detected if empty)")
 	cmd.Flags().StringVar(&volumeAccessMode, "access-mode", "RWX", "PVC access mode: RO, RWO, RWX")
-	cmd.Flags().StringVar(&vmMemory, "vm-memory", "2G", "Memory request and limit per VM")
-	cmd.Flags().IntVar(&vmCPU, "vm-cpu", 1, "CPU sockets per VM")
+	cmd.Flags().StringVar(&vmMemory, "vm-memory", "2G", "Memory request per VM")
+	cmd.Flags().StringVar(&vmMemoryLimit, "vm-memory-limit", "4G", "Memory limit per VM")
+	cmd.Flags().IntVar(&vmCPU, "vm-cpu", 1, "CPU request sockets per VM")
+	cmd.Flags().IntVar(&vmCPULimit, "vm-cpu-limit", 2, "CPU limit sockets per VM")
 	cmd.Flags().StringVar(&storageSize, "storage-size", "76Gi", "Root disk storage size")
+	cmd.Flags().StringVar(&cdiSourceType, "cdi-source-type", "http", "CDI source type: http or s3")
+	cmd.Flags().StringVar(&cdiSourceS3Cred, "cdi-source-s3-cred", "", "Secret name for S3 CDI source authentication")
+	cmd.Flags().DurationVar(&jobIterationDelay, "job-iteration-delay", 1500*time.Millisecond, "Delay between VM creation iterations")
 	cmd.Flags().DurationVar(&vmiRunningThreshold, "vmi-ready-threshold", 0, "VMI ready timeout threshold")
 	cmd.Flags().StringSliceVar(&metricsProfiles, "metrics-profile", []string{"metrics.yml"}, "Comma separated list of metrics profiles to use")
 	return cmd
@@ -135,6 +150,9 @@ func startAndMeasureVMs(ctx context.Context) []bootstormResult {
 	for _, vm := range vmList.Items {
 		vmNames = append(vmNames, vm.GetName())
 	}
+	sort.Slice(vmNames, func(i, j int) bool {
+		return vmIteration(vmNames[i]) < vmIteration(vmNames[j])
+	})
 	if len(vmNames) == 0 {
 		log.Errorf("No VMs found in namespace %s", bootstormNamespace)
 		return nil
@@ -171,13 +189,7 @@ func startAndMeasureVMs(ctx context.Context) []bootstormResult {
 		}(name)
 	}
 	stopWg.Wait()
-	log.Infof("DV polling finished. Resting 150s before boot measurement...")
-	select {
-	case <-ctx.Done():
-		return nil
-	case <-time.After(150 * time.Second):
-	}
-	log.Infof("Starting %d VMs (concurrency: %d)", len(vmNames), sshConcurrencyLimit)
+	log.Infof("DV polling finished. Starting %d VMs (concurrency: %d)", len(vmNames), sshConcurrencyLimit)
 
 	// Start + measure in bulks with barrier and rest between bulks
 	var allResults []bootstormResult
@@ -288,6 +300,15 @@ func waitForSSH(ctx context.Context, vmName string, startTime time.Time) bootsto
 	return bootstormResult{VMName: vmName, Node: node, AccessVM: 0}
 }
 
+func vmIteration(name string) int {
+	parts := strings.Split(name, "-")
+	if len(parts) >= 3 {
+		n, _ := strconv.Atoi(parts[len(parts)-2])
+		return n
+	}
+	return 0
+}
+
 func getVMINode(ctx context.Context, vmName string) string {
 	output, err := exec.CommandContext(ctx, "kubectl", "get", "vmi", vmName, "-n", bootstormNamespace,
 		"-o", "jsonpath={.status.nodeName}").Output()
@@ -348,9 +369,34 @@ func writeBootstormResults(results []bootstormResult, wh *workloads.WorkloadHelp
 
 func cleanupBootstormNamespace(ctx context.Context) {
 	k8sConnector := getK8SConnector()
-	log.Infof("Cleaning up namespace %s", bootstormNamespace)
-	err := k8sConnector.ClientSet().CoreV1().Namespaces().Delete(ctx, bootstormNamespace, metav1.DeleteOptions{})
-	if err != nil {
+	vmGVR := schema.GroupVersionResource{Group: "kubevirt.io", Version: "v1", Resource: "virtualmachines"}
+
+	vmiGVR := schema.GroupVersionResource{Group: "kubevirt.io", Version: "v1", Resource: "virtualmachineinstances"}
+	vmList, err := k8sConnector.DynamicClient().Resource(vmGVR).Namespace(bootstormNamespace).List(ctx, metav1.ListOptions{})
+	if err == nil && len(vmList.Items) > 0 {
+		log.Infof("Stopping %d VMs", len(vmList.Items))
+		for _, vm := range vmList.Items {
+			_ = exec.CommandContext(ctx, "virtctl", "stop", vm.GetName(), "-n", bootstormNamespace).Run()
+		}
+		deadline := time.After(3 * time.Minute)
+		for {
+			select {
+			case <-deadline:
+				log.Warnf("Timed out waiting for VMs to stop, force deleting namespace")
+				goto deleteNS
+			case <-time.After(10 * time.Second):
+				vmiList, err := k8sConnector.DynamicClient().Resource(vmiGVR).Namespace(bootstormNamespace).List(ctx, metav1.ListOptions{})
+				if err != nil || len(vmiList.Items) == 0 {
+					log.Infof("All VMs stopped")
+					goto deleteNS
+				}
+			}
+		}
+	}
+
+deleteNS:
+	log.Infof("Deleting namespace %s", bootstormNamespace)
+	if err := k8sConnector.ClientSet().CoreV1().Namespaces().Delete(ctx, bootstormNamespace, metav1.DeleteOptions{}); err != nil {
 		log.Warnf("Failed to delete namespace %s: %v", bootstormNamespace, err)
 	} else {
 		log.Infof("Namespace %s deleted", bootstormNamespace)

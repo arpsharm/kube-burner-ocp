@@ -60,6 +60,8 @@ jobs:
         storageClassName: {{.storageClassName}}
         accessMode: {{.accessMode}}
         storageSize: {{.storageSize}}
+        cdiSourceType: {{.cdiSourceType}}
+        cdiSourceS3Cred: {{.cdiSourceS3Cred}}
       waitOptions:
         customStatusPaths:
         - key: '(.conditions.[] | select(.type == "Ready")).status'
@@ -70,6 +72,7 @@ jobs:
   jobIterations: {{.JOB_ITERATIONS}}
   qps: {{.QPS}}
   burst: {{.BURST}}
+  jobIterationDelay: {{.jobIterationDelay}}
   namespacedIterations: false
   namespace: {{ $namespace }}
   namespaceLabels:
@@ -95,4 +98,6 @@ jobs:
         accessMode: {{.accessMode}}
         storageSize: {{.storageSize}}
         vmMemory: {{.vmMemory}}
+        vmMemoryLimit: {{.vmMemoryLimit}}
         vmCPU: {{.vmCPU}}
+        vmCPULimit: {{.vmCPULimit}}
