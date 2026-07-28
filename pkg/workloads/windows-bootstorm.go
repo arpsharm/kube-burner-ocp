@@ -189,36 +189,52 @@ func startAndMeasureVMs(ctx context.Context) []bootstormResult {
 		}(name)
 	}
 	stopWg.Wait()
-	log.Infof("DV polling finished. Starting %d VMs (concurrency: %d)", len(vmNames), sshConcurrencyLimit)
+	log.Infof("DV polling finished. Resting 30s before starting VMs...")
+	time.Sleep(30 * time.Second)
+	log.Infof("Starting %d VMs (concurrency: %d)", len(vmNames), sshConcurrencyLimit)
 
+	// Start + measure in bulks with barrier and rest between bulks
 	var allResults []bootstormResult
 	var mu sync.Mutex
 
-	// Start all VMs and measure SSH — semaphore limits concurrency
-	log.Infof("Starting %d VMs (concurrency: %d)", len(vmNames), sshConcurrencyLimit)
-	sem := make(chan struct{}, sshConcurrencyLimit)
-	var wg sync.WaitGroup
-	for _, vmName := range vmNames {
-		wg.Add(1)
-		go func(name string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			startTime := time.Now()
-			if err := exec.CommandContext(ctx, "virtctl", "start", name, "-n", bootstormNamespace).Run(); err != nil {
-				log.Warnf("Failed to start VM %s: %v", name, err)
+	for i := 0; i < len(vmNames); i += sshConcurrencyLimit {
+		end := i + sshConcurrencyLimit
+		if end > len(vmNames) {
+			end = len(vmNames)
+		}
+		bulk := vmNames[i:end]
+		log.Infof("Starting bulk %d-%d (%d VMs)", i, end-1, len(bulk))
+
+		var wg sync.WaitGroup
+		for _, vmName := range bulk {
+			wg.Add(1)
+			go func(name string) {
+				defer wg.Done()
+				startTime := time.Now()
+				if err := exec.CommandContext(ctx, "virtctl", "start", name, "-n", bootstormNamespace).Run(); err != nil {
+					log.Warnf("Failed to start VM %s: %v", name, err)
+					mu.Lock()
+					allResults = append(allResults, bootstormResult{VMName: name, AccessVM: 0})
+					mu.Unlock()
+					return
+				}
+				result := waitForSSH(ctx, name, startTime)
 				mu.Lock()
-				allResults = append(allResults, bootstormResult{VMName: name, AccessVM: 0})
+				allResults = append(allResults, result)
 				mu.Unlock()
-				return
+			}(vmName)
+		}
+		wg.Wait()
+
+		if end < len(vmNames) {
+			log.Infof("Bulk complete, resting 30s")
+			select {
+			case <-ctx.Done():
+				return allResults
+			case <-time.After(30 * time.Second):
 			}
-			result := waitForSSH(ctx, name, startTime)
-			mu.Lock()
-			allResults = append(allResults, result)
-			mu.Unlock()
-		}(vmName)
+		}
 	}
-	wg.Wait()
 
 	log.Infof("Boot measurement complete: %d/%d VMs", len(allResults), len(vmNames))
 	return allResults
