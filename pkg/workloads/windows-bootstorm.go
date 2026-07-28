@@ -189,7 +189,9 @@ func startAndMeasureVMs(ctx context.Context) []bootstormResult {
 		}(name)
 	}
 	stopWg.Wait()
-	log.Infof("DV polling finished. Starting %d VMs (concurrency: %d)", len(vmNames), sshConcurrencyLimit)
+	log.Infof("DV polling finished. Resting 30s before starting VMs...")
+	time.Sleep(30 * time.Second)
+	log.Infof("Starting %d VMs (concurrency: %d)", len(vmNames), sshConcurrencyLimit)
 
 	// Start + measure in bulks with barrier and rest between bulks
 	var allResults []bootstormResult
